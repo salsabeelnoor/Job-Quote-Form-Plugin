@@ -256,7 +256,7 @@ function jpm_jq_form_shortcode() {
                                     <div class="form-actions button-group main-action-buttons">
                                         <button type="button" class="button secondary add-another-fitting-button">Add Another Fitting</button>
                                         <?php wp_nonce_field( 'my_complex_form_nonce_action', 'my_complex_form_nonce_field' ); ?>
-                                        <button type="submit" class="button" id="send-quote-button" name="my_complex_form_submit">Send Quote</button>
+                                        <button type="submit" class="button jq-button" id="send-quote-button" name="my_complex_form_submit">Send Quote</button>
                                     </div>
                                 </div>
                             </div>

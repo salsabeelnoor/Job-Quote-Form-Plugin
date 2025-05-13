@@ -1,0 +1,398 @@
+<?php
+/**
+ * Plugin Name: Job Quote Submission Form
+ * Description: Frontend form with dynamic repeatable fields for ACF Pro Repeater using Uploadcare for image URLs. Uploadcare assets loaded externally.
+ * Version: 1.6.0
+ * Author: Salsabeel Noor
+ * Requires Plugins: Advanced Custom Fields PRO, JPM Secure Page Gate
+ */
+
+ if ( ! defined( 'ABSPATH' ) ) {
+    exit; // Exit if accessed directly.
+}
+
+if ( ! defined( 'JQ_FORM_PLUGIN_DIR' ) ) {
+    define( 'JQ_FORM_PLUGIN_DIR', untrailingslashit( plugin_dir_path( __FILE__ ) ) );
+}
+
+/**
+ * Retrieves choices for a specific select sub-field within a named repeater field.
+ */
+function jq_get_acf_select_choices_from_repeater( $repeater_name, $select_sub_field_name ) {
+    if ( ! function_exists( 'acf_get_field_groups' ) || ! function_exists( 'acf_get_fields' ) ) {
+        return [];
+    }
+    foreach ( acf_get_field_groups() as $field_group ) {
+        $fields_in_group = acf_get_fields( $field_group['key'] );
+        if ( empty( $fields_in_group ) ) {
+            continue;
+        }
+        foreach ( $fields_in_group as $field ) {
+            if ( isset( $field['name'] ) && $field['name'] === $repeater_name && $field['type'] === 'repeater' && ! empty( $field['sub_fields'] ) ) {
+                foreach ( $field['sub_fields'] as $sub_field ) {
+                    if ( isset( $sub_field['name'] ) && $sub_field['name'] === $select_sub_field_name && $sub_field['type'] === 'select' && ! empty( $sub_field['choices'] ) ) {
+                        return $sub_field['choices'];
+                    }
+                }
+            }
+        }
+    }
+    return [];
+}
+
+/**
+ * Handles AJAX form submission.
+ */
+function jpm_jq_handle_form_submission() {
+    if ( ! isset( $_POST['my_complex_form_nonce_field'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['my_complex_form_nonce_field'] ) ), 'my_complex_form_nonce_action' ) ) {
+        wp_send_json_error( array( 'message' => 'Nonce verification failed.' ), 403 );
+    }
+    if ( ! isset( $_POST['fields'] ) || ! is_array( $_POST['fields'] ) ) {
+        wp_send_json_error( array( 'message' => 'Invalid form data.' ), 400 );
+    }
+
+    $raw_fields = $_POST['fields'];
+    $sanitized_data = array();
+    $email_body_parts = array();
+    $unit_of_measurement_choices = jq_get_acf_select_choices_from_repeater('fittings', 'unit_of_measurement');
+    $fitting_type_choices = jq_get_acf_select_choices_from_repeater('fittings', 'fitting_type');
+
+    if ( isset( $raw_fields['operator_name'] ) ) {
+        $sanitized_data['operator_name'] = sanitize_text_field( $raw_fields['operator_name'] );
+        if ( empty( $sanitized_data['operator_name'] ) ) { wp_send_json_error( array( 'message' => 'Operator Name is required.' ), 400 ); }
+        $email_body_parts[] = "Operator Name: " . esc_html( $sanitized_data['operator_name'] );
+    } else { wp_send_json_error( array( 'message' => 'Operator Name is missing.' ), 400 ); }
+
+    if ( isset( $raw_fields['address_of_unit'] ) ) {
+        $sanitized_data['address_of_unit'] = sanitize_text_field( $raw_fields['address_of_unit'] );
+         if ( empty( $sanitized_data['address_of_unit'] ) ) { wp_send_json_error( array( 'message' => 'Address of Unit is required.' ), 400 ); }
+        $email_body_parts[] = "Address of Unit: " . esc_html( $sanitized_data['address_of_unit'] );
+    } else { wp_send_json_error( array( 'message' => 'Address of Unit is missing.' ), 400 ); }
+
+    $sanitized_data['fittings'] = array();
+    if ( isset( $raw_fields['fittings'] ) && is_array( $raw_fields['fittings'] ) ) {
+        $fitting_email_parts = array();
+        foreach ( $raw_fields['fittings'] as $index => $fitting_row ) {
+            if ( ! is_array( $fitting_row ) ) continue;
+            $sanitized_row = array();
+            $current_fitting_email_parts = array("Fitting #" . ($index + 1) . ":");
+
+            $sanitized_row['size_of_unit'] = isset( $fitting_row['size_of_unit'] ) ? floatval( $fitting_row['size_of_unit'] ) : 0;
+            $current_fitting_email_parts[] = "  Size of Unit: " . esc_html( (string) $sanitized_row['size_of_unit'] );
+            $unit_value = isset( $fitting_row['unit_of_measurement'] ) ? sanitize_text_field( $fitting_row['unit_of_measurement'] ) : '';
+            $sanitized_row['unit_of_measurement'] = $unit_value;
+            $unit_label = isset( $unit_of_measurement_choices[ $unit_value ] ) ? $unit_of_measurement_choices[ $unit_value ] : $unit_value;
+            $current_fitting_email_parts[] = "  Unit of Measurement: " . esc_html( $unit_label );
+            $type_value = isset( $fitting_row['fitting_type'] ) ? sanitize_text_field( $fitting_row['fitting_type'] ) : '';
+            $sanitized_row['fitting_type'] = $type_value;
+            $type_label = isset( $fitting_type_choices[ $type_value ] ) ? $fitting_type_choices[ $type_value ] : $type_value;
+            $current_fitting_email_parts[] = "  Fitting Type: " . esc_html( $type_label );
+            $sanitized_row['additional_notes'] = isset( $fitting_row['additional_notes'] ) ? sanitize_textarea_field( $fitting_row['additional_notes'] ) : '';
+            $current_fitting_email_parts[] = "  Additional Notes: " . nl2br( esc_html( $sanitized_row['additional_notes'] ) );
+            $sanitized_row['external_file_reference'] = isset( $fitting_row['external_file_reference'] ) ? esc_url_raw( $fitting_row['external_file_reference'] ) : '';
+            $current_fitting_email_parts[] = "  External File Reference: " . esc_html( $sanitized_row['external_file_reference'] );
+
+            if ( ! empty( $fitting_row['photo'] ) ) {
+                $uploadcare_url = esc_url_raw( trim($fitting_row['photo']) );
+                if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                    $sanitized_row['photo'] = $uploadcare_url;
+                    $current_fitting_email_parts[] = "  Photo (Uploadcare URL): <a href='" . esc_url($uploadcare_url) . "' target='_blank'>" . esc_url($uploadcare_url) . "</a>";
+                } else {
+                    $sanitized_row['photo'] = '';
+                    $current_fitting_email_parts[] = "  Photo (Uploadcare): Invalid URL - " . esc_html($fitting_row['photo']);
+                }
+            } else {
+                $sanitized_row['photo'] = '';
+                $current_fitting_email_parts[] = "  Photo: Not provided";
+            }
+            $sanitized_data['fittings'][] = $sanitized_row;
+            $fitting_email_parts[] = implode("\n", $current_fitting_email_parts);
+        }
+        if (!empty($fitting_email_parts)) { $email_body_parts[] = "\nFittings Details:\n" . implode("\n\n", $fitting_email_parts); }
+    }
+
+    $post_title = 'Job Quote - ' . ($sanitized_data['operator_name'] ?? 'Unknown') . ' - ' . current_time('Y-m-d H:i:s');
+    $new_post_args = array('post_title' => sanitize_text_field($post_title), 'post_status' => 'publish', 'post_type' => 'job_quote');
+    $post_id = wp_insert_post( $new_post_args, true );
+    if ( is_wp_error( $post_id ) ) { wp_send_json_error( array( 'message' => 'Error: ' . $post_id->get_error_message() ), 500 ); }
+
+    update_field( 'operator_name', $sanitized_data['operator_name'], $post_id );
+    update_field( 'address_of_unit', $sanitized_data['address_of_unit'], $post_id );
+    if ( ! empty( $sanitized_data['fittings'] ) ) { update_field( 'fittings', $sanitized_data['fittings'], $post_id ); }
+
+    $admin_email = get_option( 'admin_email' );
+    $email_subject = 'New Submission: ' . ($sanitized_data['operator_name'] ?? 'Unknown');
+    $email_headers = array('Content-Type: text/html; charset=UTF-8');
+    $final_email_body = "New job quote:<br><br>" . nl2br(implode("\n", $email_body_parts));
+    wp_mail( $admin_email, $email_subject, $final_email_body, $email_headers );
+
+    wp_send_json_success( array( 'message' => 'Quote submitted successfully!', 'post_id' => $post_id ) );
+}
+add_action( 'wp_ajax_my_jq_form_submission', 'jpm_jq_handle_form_submission' );
+add_action( 'wp_ajax_nopriv_my_jq_form_submission', 'jpm_jq_handle_form_submission' );
+
+function jpm_jq_enqueue_form_assets() {
+    global $post;
+    if ( ! is_a( $post, 'WP_Post' ) || ! has_shortcode( $post->post_content, 'jpm_job_quote_form' ) ) { return; }
+
+    wp_enqueue_style('my-jq-form-styles', plugin_dir_url( __FILE__ ) . 'assets/css/style.css', [], '1.0');
+    // NO UPLOADCARE ASSETS ENQUEUED HERE BY THIS PLUGIN
+
+    wp_enqueue_script('my-jq-ui-script', plugin_dir_url( __FILE__ ) . 'assets/js/script.js', ['jquery', 'wp-util'], '1.0', true);
+    wp_localize_script('my-jq-ui-script', 'jpmJQForm',
+        array(
+            'ajaxurl' => admin_url( 'admin-ajax.php' ),
+            'add_fitting_template' => jq_get_fitting_template_html(),
+            'uploadcare_pubkey' => '7b06642c34de8ca6b466' // Your Uploadcare Pubkey
+        )
+    );
+    wp_enqueue_script('my-jq-submission-script', plugin_dir_url( __FILE__ ) . 'assets/js/form-submission.js', ['jquery', 'my-jq-ui-script'], '1.0', true);
+}
+add_action( 'wp_enqueue_scripts', 'jpm_jq_enqueue_form_assets' );
+
+
+function jpm_jq_form_shortcode() {
+    ob_start();
+
+    $unit_choices = jq_get_acf_select_choices_from_repeater( 'fittings', 'unit_of_measurement' );
+    $fitting_type_choices = jq_get_acf_select_choices_from_repeater( 'fittings', 'fitting_type' );
+    $initial_ctx_name = ''; // Specific context name for the first item
+    ?>
+    <uc-config
+        ctx-name="jpm-photo-uploader-0"
+        pubkey="7b06642c34de8ca6b466"
+        img-only="true"
+        multiple="false"
+        max-local-file-size-bytes="524288000"
+        use-cloud-image-editor="true"
+        source-list="local, url, camera, dropbox, gdrive"
+        clearable="true">
+    </uc-config>
+
+    <div class="container jpm-jq-form">
+        <div id="jpm-form-container">
+            <form id="jpm-complex-form" class="job-quote-form" method="post" enctype="multipart/form-data">
+
+                <div class="jq-form--ini-wrapper fitting-field-group" data-fitting-index="0"> 
+                    <div class="jq-form jq-form--ini"> 
+                        <div class="image-section">
+                            <div class="img--one"><img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/image.png" alt="Background Image"></div>
+                            <div class="img--two"><img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/image-1.png" alt="Foreman Image"></div>
+                            <div class="logo-images">
+                                <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/group-3.png" alt="JPM Logo Part 1">
+                                <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/vector-3.svg" alt="JPM Logo Part 2">
+                                <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/vector-4.svg" alt="JPM Logo Part 3">
+                                <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/vector.svg" alt="JPM Logo Part 4">
+                                <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/group-4.png" alt="JPM Logo Part 5">
+                            </div>
+                        </div>
+                        <div class="jq-form-fields-wrapper">
+                            <h2 id="form-title">JPM Job Quote Submission <span class="fitting-number-initial" style="font-weight:normal; font-size:0.8em;">(Fitting #1)</span></h2>
+                            <div class="form-section initial-fields">
+                                <p class="form-group">
+                                    <label for="operator_name">Operator Name:</label><br>
+                                    <input type="text" id="operator_name" name="fields[operator_name]" required placeholder="Operator Name">
+                                </p>
+                                <p class="form-group">
+                                    <label for="address_of_unit">Address of unit:</label><br>
+                                    <input type="text" id="address_of_unit" name="fields[address_of_unit]" required placeholder="Address of unit">
+                                </p>
+                            </div>
+                            <div class="fitting-sub-fields"> 
+                                <div class="unit-group">
+                                    <p class="form-group">
+                                        <label for="fitting_size_of_unit_0">Size of Unit:</label><br>
+                                        <input type="text" id="fitting_size_of_unit_0" class="fitting-field fitting-size-of-unit"
+                                            name="fields[fittings][0][size_of_unit]" placeholder="Size of Unit">
+                                    </p>
+                                    <p class="form-group">
+                                        <label for="fitting_unit_of_measurement_0">Unit of measurement:</label><br>
+                                        <select id="fitting_unit_of_measurement_0" class="fitting-field fitting-unit-of-measurement"
+                                            name="fields[fittings][0][unit_of_measurement]">
+                                            <option value="">-- Select Unit --</option>
+                                            <?php if ( ! empty( $unit_choices ) ) : foreach ( $unit_choices as $value => $label ) : ?>
+                                            <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
+                                            <?php endforeach; else: ?>
+                                            <option value="feet">Feet (Fallback)</option>
+                                            <option value="meter">Meters (Fallback)</option>
+                                            <?php endif; ?>
+                                        </select>
+                                    </p>
+                                </div>
+                                <p class="form-group">
+                                    <label for="fitting_fitting_type_0">Fitting Type:</label><br>
+                                    <select id="fitting_fitting_type_0" class="fitting-field fitting-fitting-type" name="fields[fittings][0][fitting_type]">
+                                        <option value="">-- Select a fitting --</option>
+                                        <?php if ( ! empty( $fitting_type_choices ) ) : foreach ( $fitting_type_choices as $value => $label ) : ?>
+                                        <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
+                                        <?php endforeach; else: ?>
+                                        <option value="led_panel">LED Panel</option>
+                                        <option value="emergency_light">Emergency Light</option>
+                                        <option value="other">Other</option>
+                                        <?php endif; ?>
+                                    </select>
+                                </p>
+                                <p class="form-group">
+                                    <label for="fitting_additional_notes_0">Additional Notes:</label><br>
+                                    <textarea id="fitting_additional_notes_0" class="fitting-field fitting-additional-notes"
+                                        name="fields[fittings][0][additional_notes]" rows="4"
+                                        placeholder="Enter any additional job details"></textarea>
+                                </p>
+                                <p class="form-group">
+                                    <label for="fitting_external_file_reference_0">External File Reference (Optional):</label><br>
+                                    <input type="text" id="fitting_external_file_reference_0" class="fitting-field fitting-external-file-reference"
+                                        name="fields[fittings][0][external_file_reference]" placeholder="e.g., URL">
+                                </p>
+                                <div class="jq-file-btn-group">
+                                    <div class="form-group file-upload-group">
+                                        <label class="d-block">Upload/Take Photo (via Uploadcare):</label><br>
+                                        <uc-file-uploader-regular ctx-name="jpm-photo-uploader-0"
+                                        css-src="https://cdn.jsdelivr.net/npm/@uploadcare/file-uploader@v1/web/uc-file-uploader.min.css">
+                                            <uc-form-input ctx-name="jpm-photo-uploader-0"> </uc-form-input>
+                                        </uc-file-uploader-regular>
+                                        
+                                    </div>
+                                    <div class="separator"></div>
+                                    <div class="form-actions button-group main-action-buttons">
+                                        <button type="button" class="button secondary add-another-fitting-button">Add Another Fitting</button>
+                                        <?php wp_nonce_field( 'my_complex_form_nonce_action', 'my_complex_form_nonce_field' ); ?>
+                                        <button type="submit" class="button" id="send-quote-button" name="my_complex_form_submit">Send Quote</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="form-messages" style="margin-top: 20px;"></div>
+                        </div> 
+                    </div> 
+                </div>
+
+                <div id="fittings-container">
+                </div>
+            </form>
+        </div>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+add_shortcode( 'jpm_job_quote_form', 'jpm_jq_form_shortcode' );
+
+
+function jq_get_fitting_template_html() {
+    ob_start();
+
+
+    $unit_choices = jq_get_acf_select_choices_from_repeater( 'fittings', 'unit_of_measurement' );
+    $fitting_type_choices = jq_get_acf_select_choices_from_repeater( 'fittings', 'fitting_type' );
+    ?>
+    
+
+    <div class="jq-form--ini-wrapper jq-form-temp form-section fitting-fields" data-fitting-index="__INDEX__">
+        <script type="module">
+            import * as UC from "https://cdn.jsdelivr.net/npm/@uploadcare/file-uploader@v1/web/uc-file-uploader-regular.min.js";
+            UC.defineComponents(UC);
+        </script>
+        <uc-config
+            ctx-name="jpm-photo-uploader-__INDEX__"
+            pubkey="7b06642c34de8ca6b466"
+            img-only="true"
+            multiple="false"
+            max-local-file-size-bytes="524288000"
+            use-cloud-image-editor="true"
+            source-list="local, url, camera, dropbox, gdrive"
+            clearable="true">
+        </uc-config>
+        <div class="jq-form jq-form--ini">
+            <div class="image-section">
+                
+                <div class="img--one"><img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/image.png" alt="Background Image"></div>
+                <div class="img--two"><img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/image-1.png" alt="Foreman Image"></div>
+                <div class="logo-images">
+                    <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/group-3.png" alt="JPM Logo Part 1">
+                    <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/vector-3.svg" alt="JPM Logo Part 2">
+                    <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/vector-4.svg" alt="JPM Logo Part 3">
+                    <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/vector.svg" alt="JPM Logo Part 4">
+                    <img src="https://c.animaapp.com/m9u0i2zzfWklB8/img/group-4.png" alt="JPM Logo Part 5">
+                </div>
+            </div>
+            <div class="jq-form-fields-wrapper">
+                
+                <h2 class="form-title-repeated">JPM Job Quote Submission Fitting #<span class="fitting-number">__NUMBER__</span></h2>
+
+                <div class="form-section initial-fields repeated-initial-fields">
+                    <p class="form-group repeated-operator-name">
+                        <label>Operator Name:</label><br>
+                        <input type="text" class="readonly-operator-name" name="fields[fittings][__INDEX__][operator_name_display]" readonly> 
+                    </p>
+                    <p class="form-group repeated-address-of-unit">
+                        <label>Address of unit:</label><br>
+                        <input type="text" class="readonly-address-of-unit" name="fields[fittings][__INDEX__][address_of_unit_display]" readonly> 
+                    </p>
+                </div>
+
+                <div class="fitting-sub-fields">
+                    <div class="unit-group">
+                        <p class="form-group">
+                            <label for="fitting-size-of-unit___INDEX__">Size of Unit:</label><br>
+                            <input type="text" id="fitting-size-of-unit___INDEX__" class="fitting-field fitting-size-of-unit"
+                                name="fields[fittings][__INDEX__][size_of_unit]" placeholder="Size of Unit">
+                        </p>
+                        <p class="form-group">
+                            <label for="fitting-unit-of-measurement___INDEX__">Unit of measurement:</label><br>
+                            <select id="fitting-unit-of-measurement___INDEX__" class="fitting-field fitting-unit-of-measurement"
+                                name="fields[fittings][__INDEX__][unit_of_measurement]">
+                                <option value="">-- Select Unit --</option>
+                                <?php if ( ! empty( $unit_choices ) ) : foreach ( $unit_choices as $value => $label ) : ?>
+                                <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
+                                <?php endforeach; else: ?>
+                                <option value="feet">Feet</option>
+                                <option value="meter">Meters</option>
+                                <?php endif; ?>
+                            </select>
+                        </p>
+                    </div>
+                    <p class="form-group">
+                        <label for="fitting-fitting-type___INDEX__">Fitting Type:</label><br>
+                        <select id="fitting-fitting-type___INDEX__" class="fitting-field fitting-fitting-type" name="fields[fittings][__INDEX__][fitting_type]">
+                            <option value="">-- Select a fitting --</option>
+                            <?php if ( ! empty( $fitting_type_choices ) ) : foreach ( $fitting_type_choices as $value => $label ) : ?>
+                            <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
+                            <?php endforeach; else: ?>
+                            <option value="led_panel">LED Panel</option>
+                            <option value="emergency_light">Emergency Light</option>
+                            <option value="other">Other</option>
+                            <?php endif; ?>
+                        </select>
+                    </p>
+                    <p class="form-group">
+                        <label for="fitting-additional-notes___INDEX__">Additional Notes:</label><br>
+                        <textarea id="fitting-additional-notes___INDEX__" class="fitting-field fitting-additional-notes"
+                            name="fields[fittings][__INDEX__][additional_notes]" rows="4"
+                            placeholder="Enter any additional job details"></textarea>
+                    </p>
+                     <p class="form-group">
+                        <label for="fitting-external-file-reference___INDEX__">External File Reference (Optional):</label><br>
+                        <input type="text" id="fitting-external-file-reference___INDEX__" class="fitting-field fitting-external-file-reference"
+                            name="fields[fittings][__INDEX__][external_file_reference]" placeholder="e.g., URL">
+                    </p>
+                    <div class="jq-file-btn-group">
+                        <div class="form-group file-upload-group">
+                            <label class="d-block">Upload/Take Photo (via Uploadcare):</label><br>
+                            <uc-file-uploader-regular ctx-name="jpm-photo-uploader-__INDEX__" >
+                                <uc-form-input ctx-name="jpm-photo-uploader-__INDEX__" ></uc-form-input>
+                            </uc-file-uploader-regular>
+                            
+                        </div>
+                        <div class="separator"></div>
+                        <div class="form-actions button-group template-action-buttons"> 
+                            <button type="button" class="button secondary add-another-fitting-button">Add Another Fitting</button>
+                            
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
+?>

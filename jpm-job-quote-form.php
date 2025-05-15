@@ -108,14 +108,21 @@ function jpm_send_data_to_make_webhook($payload, $webhook_url, $post_id) {
         return false; // Indicate that sending was skipped or failed due to config
     }
 
+     $json_payload_for_make = json_encode($payload); // Encode it once
+
+    // Log the exact JSON payload being sent to Make.com
+    error_log('JPM Quote (to Make.com) - Payload for post ID ' . $post_id . ': ' . $json_payload_for_make);
+
     $args = [
-        'body'        => json_encode($payload),
+        'body'        => $json_payload_for_make,
         'headers'     => ['Content-Type' => 'application/json'],
         'timeout'     => 15, // seconds
         'redirection' => 5,
         'blocking'    => true, // Wait for Make's immediate "Accepted" response
         'sslverify'   => true, // true for production
     ];
+
+    error_log('JPM Quote (to Make.com) - wp_remote_post args for post ID ' . $post_id . ': ' . print_r($args, true)); // Optional: for deep debugging
 
     $response_from_make = wp_remote_post($webhook_url, $args);
 
@@ -135,10 +142,8 @@ function jpm_send_data_to_make_webhook($payload, $webhook_url, $post_id) {
     }
 }
 
-/**
- * Handles AJAX form submission.
- */
 function jpm_jq_handle_form_submission() {
+    // 1. Verify Nonce and Basic Data Presence
     if (!isset($_POST['my_complex_form_nonce_field']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['my_complex_form_nonce_field'])), 'my_complex_form_nonce_action')) {
         wp_send_json_error(['message' => 'Nonce verification failed.'], 403);
     }
@@ -147,8 +152,9 @@ function jpm_jq_handle_form_submission() {
     }
 
     $raw_fields = $_POST['fields'];
-    $sanitized_data_for_acf = [];
+    $sanitized_data_for_acf = []; // This will hold all data intended for ACF fields
 
+    // 2. Sanitize Operator Name & Address (for ACF, WordPress Email, and Post Title)
     if (isset($raw_fields['operator_name'])) {
         $sanitized_data_for_acf['operator_name'] = sanitize_text_field($raw_fields['operator_name']);
         if (empty($sanitized_data_for_acf['operator_name'])) {
@@ -167,34 +173,46 @@ function jpm_jq_handle_form_submission() {
         wp_send_json_error(['message' => 'Address of Unit is missing.'], 400);
     }
 
-    // --- Sanitize Fittings Data for ACF ---
-    $sanitized_data_for_acf['fittings'] = [];
+    // 3. --- Process Fittings:
+    //    - Sanitize all fitting data for ACF.
+    //    - Extract photo URLs for Make.com, wrapping each URL in an object with a 'value' key.
+    $all_photo_urls_for_make = [];
+    $sanitized_data_for_acf['fittings'] = []; // Initialize for ACF
+
     if (isset($raw_fields['fittings']) && is_array($raw_fields['fittings'])) {
         foreach ($raw_fields['fittings'] as $index => $fitting_row) {
-            if (!is_array($fitting_row)) continue;
+            if (!is_array($fitting_row)) {
+                continue;
+            }
             
-            $current_acf_row = []; 
+            $current_acf_row = []; // Holds all sanitized data for one fitting row for ACF
+
             $current_acf_row['size_of_unit'] = isset($fitting_row['size_of_unit']) ? floatval($fitting_row['size_of_unit']) : 0;
             $current_acf_row['unit_of_measurement'] = isset($fitting_row['unit_of_measurement']) ? sanitize_text_field($fitting_row['unit_of_measurement']) : '';
             $current_acf_row['fitting_type'] = isset($fitting_row['fitting_type']) ? sanitize_text_field($fitting_row['fitting_type']) : '';
             $current_acf_row['additional_notes'] = isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : '';
             $current_acf_row['external_file_reference'] = isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '';
 
+            // Initialize photo field for ACF
+            $current_acf_row['photo'] = ''; 
+
             if (!empty($fitting_row['photo'])) {
                 $uploadcare_url = esc_url_raw(trim($fitting_row['photo']));
                 if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
-                    $current_acf_row['photo'] = $uploadcare_url;
-                } else {
-                    $current_acf_row['photo'] = '';
+                    $current_acf_row['photo'] = $uploadcare_url; // Populate for ACF
+                     $all_photo_urls_for_make[] = ['value' => $uploadcare_url]; // <<< THIS IS THE KEY PHP CHANGE
                 }
-            } else {
-                $current_acf_row['photo'] = ''; 
+                // If URL is invalid, $current_acf_row['photo'] remains '', which is correct for ACF.
             }
+            // If $fitting_row['photo'] was empty, $current_acf_row['photo'] remains '', which is correct for ACF.
+            
             $sanitized_data_for_acf['fittings'][] = $current_acf_row;
         }
     }
 
-    $post_title = 'Job Quote - ' . ($sanitized_data_for_acf['operator_name'] ?? 'Unknown') . ' - ' . current_time('Y-m-d H:i:s');
+    // 4. Create WordPress Post
+    $post_title_operator_part = !empty($sanitized_data_for_acf['operator_name']) ? $sanitized_data_for_acf['operator_name'] : 'Unknown Operator';
+    $post_title = 'Job Quote - ' . $post_title_operator_part . ' - ' . current_time('Y-m-d H:i:s');
     $new_post_args = ['post_title' => sanitize_text_field($post_title), 'post_status' => 'publish', 'post_type' => 'job_quote'];
     $post_id = wp_insert_post($new_post_args, true);
 
@@ -202,20 +220,35 @@ function jpm_jq_handle_form_submission() {
         wp_send_json_error(['message' => 'Error creating post: ' . $post_id->get_error_message()], 500);
     }
 
+    // 5. Update ACF Fields with all sanitized data
     update_field('operator_name', $sanitized_data_for_acf['operator_name'], $post_id);
     update_field('address_of_unit', $sanitized_data_for_acf['address_of_unit'], $post_id);
     if (!empty($sanitized_data_for_acf['fittings'])) {
         update_field('fittings', $sanitized_data_for_acf['fittings'], $post_id);
     }
 
+    // 6. Prepare and Send data to Make.com Webhook
+    $make_webhook_url = 'https://hook.eu2.make.com/d4u3hy1494wv33vyuisubbzvl7nr472x'; // Your actual webhook URL
 
+    $payload_for_make = [
+        'submission_timestamp' => current_time('mysql'),
+        'photo_urls'           => $all_photo_urls_for_make, // This is now an array of objects like [{'value': 'url1'}, {'value': 'url2'}]
+        // 'post_id_wordpress'    => $post_id, // Optional: if Make.com needs it
+        // 'operator_name'        => $sanitized_data_for_acf['operator_name'], // Optional: if Make.com needs it
+    ];
+    
+    // Call the dedicated function to send data to Make.com
+    jpm_send_data_to_make_webhook($payload_for_make, $make_webhook_url, $post_id);
+
+    // 7. Send WordPress Email Notification (with full original details)
     jpm_send_wordpress_quote_email(
         $sanitized_data_for_acf['operator_name'], 
         $sanitized_data_for_acf['address_of_unit'], 
-        isset($raw_fields['fittings']) && is_array($raw_fields['fittings']) ? $raw_fields['fittings'] : [],
+        isset($raw_fields['fittings']) && is_array($raw_fields['fittings']) ? $raw_fields['fittings'] : [], 
         $post_id
     );
 
+    // 8. Send Success Response to Frontend
     wp_send_json_success(['message' => 'Quote submitted successfully!', 'post_id' => $post_id]);
 }
 add_action('wp_ajax_my_jq_form_submission', 'jpm_jq_handle_form_submission');

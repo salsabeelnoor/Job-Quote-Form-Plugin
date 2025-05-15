@@ -40,110 +40,200 @@ function jq_get_acf_select_choices_from_repeater( $repeater_name, $select_sub_fi
     return [];
 }
 
+function jpm_send_wordpress_quote_email($operator_name, $address_of_unit, $fittings_raw_data, $post_id = null) {
+    $email_body_parts = [];
+    $unit_of_measurement_choices = jq_get_acf_select_choices_from_repeater('fittings', 'unit_of_measurement');
+    $fitting_type_choices = jq_get_acf_select_choices_from_repeater('fittings', 'fitting_type');
+
+    $email_body_parts[] = "Operator Name: " . esc_html($operator_name);
+    $email_body_parts[] = "Address of Unit: " . esc_html($address_of_unit);
+
+    if (isset($fittings_raw_data) && is_array($fittings_raw_data)) {
+        $fitting_email_lines = []; 
+        foreach ($fittings_raw_data as $index => $fitting_row) {
+            if (!is_array($fitting_row)) continue;
+            
+            $current_fitting_email_lines = ["Fitting #" . ($index + 1) . ":"]; 
+
+            $current_fitting_email_lines[] = "  Size of Unit: " . esc_html(isset($fitting_row['size_of_unit']) ? (string)floatval($fitting_row['size_of_unit']) : '0');
+            
+            $unit_value = isset($fitting_row['unit_of_measurement']) ? sanitize_text_field($fitting_row['unit_of_measurement']) : '';
+            $unit_label = isset($unit_of_measurement_choices[$unit_value]) ? $unit_of_measurement_choices[$unit_value] : $unit_value;
+            $current_fitting_email_lines[] = "  Unit of Measurement: " . esc_html($unit_label);
+            
+            $type_value = isset($fitting_row['fitting_type']) ? sanitize_text_field($fitting_row['fitting_type']) : '';
+            $type_label = isset($fitting_type_choices[$type_value]) ? $fitting_type_choices[$type_value] : $type_value;
+            $current_fitting_email_lines[] = "  Fitting Type: " . esc_html($type_label);
+            
+            $current_fitting_email_lines[] = "  Additional Notes: " . nl2br(esc_html(isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : ''));
+            
+            $current_fitting_email_lines[] = "  External File Reference: " . esc_html(isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '');
+
+            if (!empty($fitting_row['photo'])) {
+                $uploadcare_url = esc_url_raw(trim($fitting_row['photo']));
+                if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                    $current_fitting_email_lines[] = "  Photo (Uploadcare URL): <a href='" . esc_url($uploadcare_url) . "' target='_blank'>" . esc_url($uploadcare_url) . "</a>";
+                } else {
+                    $current_fitting_email_lines[] = "  Photo (Uploadcare): Invalid URL - " . esc_html($fitting_row['photo']);
+                }
+            } else {
+                $current_fitting_email_lines[] = "  Photo: Not provided";
+            }
+            $fitting_email_lines[] = implode("\n", $current_fitting_email_lines);
+        }
+        if (!empty($fitting_email_lines)) {
+            $email_body_parts[] = "\nFittings Details:\n" . implode("\n\n", $fitting_email_lines);
+        }
+    }
+
+
+
+    $admin_email = get_option('admin_email');
+    $email_subject = 'New Submission: ' . ($operator_name ?? 'Unknown');
+    $email_headers = ['Content-Type: text/html; charset=UTF-8'];
+    $final_email_body = "New job quote:<br><br>" . nl2br(implode("\n", $email_body_parts));
+    wp_mail($admin_email, $email_subject, $final_email_body, $email_headers);
+}
+
+/**
+ * Sends data to the Make.com webhook.
+ *
+ * @param array $payload The data payload to send to Make.com.
+ * @param string $webhook_url The Make.com webhook URL.
+ * @param int $post_id The ID of the WordPress post associated with this submission (for logging).
+ */
+function jpm_send_data_to_make_webhook($payload, $webhook_url, $post_id) {
+    if (empty($webhook_url) || strpos($webhook_url, 'YOUR_MAKE_COM_WEBHOOK_URL_HERE') !== false) {
+        error_log('JPM Quote - Make.com webhook URL is not configured. Skipping send for post ID ' . $post_id);
+        return false; // Indicate that sending was skipped or failed due to config
+    }
+
+    $args = [
+        'body'        => json_encode($payload),
+        'headers'     => ['Content-Type' => 'application/json'],
+        'timeout'     => 15, // seconds
+        'redirection' => 5,
+        'blocking'    => true, // Wait for Make's immediate "Accepted" response
+        'sslverify'   => true, // true for production
+    ];
+
+    $response_from_make = wp_remote_post($webhook_url, $args);
+
+    if (is_wp_error($response_from_make)) {
+        error_log('JPM Quote - Error sending data to Make.com for post ID ' . $post_id . ': ' . $response_from_make->get_error_message());
+        return false;
+    } else {
+        $response_code = wp_remote_retrieve_response_code($response_from_make);
+        $response_body = wp_remote_retrieve_body($response_from_make);
+        if ($response_code !== 200 || strtolower(trim($response_body)) !== 'accepted') {
+            error_log('JPM Quote - Make.com webhook returned unexpected response for post ID ' . $post_id . '. Status: ' . $response_code . ' Body: ' . $response_body);
+            return false;
+        } else {
+            error_log('JPM Quote - Data successfully sent to Make.com for post ID ' . $post_id . '. Response: Accepted');
+            return true;
+        }
+    }
+}
+
 /**
  * Handles AJAX form submission.
  */
 function jpm_jq_handle_form_submission() {
-    if ( ! isset( $_POST['my_complex_form_nonce_field'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['my_complex_form_nonce_field'] ) ), 'my_complex_form_nonce_action' ) ) {
-        wp_send_json_error( array( 'message' => 'Nonce verification failed.' ), 403 );
+    if (!isset($_POST['my_complex_form_nonce_field']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['my_complex_form_nonce_field'])), 'my_complex_form_nonce_action')) {
+        wp_send_json_error(['message' => 'Nonce verification failed.'], 403);
     }
-    if ( ! isset( $_POST['fields'] ) || ! is_array( $_POST['fields'] ) ) {
-        wp_send_json_error( array( 'message' => 'Invalid form data.' ), 400 );
+    if (!isset($_POST['fields']) || !is_array($_POST['fields'])) {
+        wp_send_json_error(['message' => 'Invalid form data.'], 400);
     }
 
     $raw_fields = $_POST['fields'];
-    $sanitized_data = array();
-    $email_body_parts = array();
-    $unit_of_measurement_choices = jq_get_acf_select_choices_from_repeater('fittings', 'unit_of_measurement');
-    $fitting_type_choices = jq_get_acf_select_choices_from_repeater('fittings', 'fitting_type');
+    $sanitized_data_for_acf = [];
 
-    if ( isset( $raw_fields['operator_name'] ) ) {
-        $sanitized_data['operator_name'] = sanitize_text_field( $raw_fields['operator_name'] );
-        if ( empty( $sanitized_data['operator_name'] ) ) { wp_send_json_error( array( 'message' => 'Operator Name is required.' ), 400 ); }
-        $email_body_parts[] = "Operator Name: " . esc_html( $sanitized_data['operator_name'] );
-    } else { wp_send_json_error( array( 'message' => 'Operator Name is missing.' ), 400 ); }
-
-    if ( isset( $raw_fields['address_of_unit'] ) ) {
-        $sanitized_data['address_of_unit'] = sanitize_text_field( $raw_fields['address_of_unit'] );
-         if ( empty( $sanitized_data['address_of_unit'] ) ) { wp_send_json_error( array( 'message' => 'Address of Unit is required.' ), 400 ); }
-        $email_body_parts[] = "Address of Unit: " . esc_html( $sanitized_data['address_of_unit'] );
-    } else { wp_send_json_error( array( 'message' => 'Address of Unit is missing.' ), 400 ); }
-
-    $sanitized_data['fittings'] = array();
-    if ( isset( $raw_fields['fittings'] ) && is_array( $raw_fields['fittings'] ) ) {
-        $fitting_email_parts = array();
-        foreach ( $raw_fields['fittings'] as $index => $fitting_row ) {
-            if ( ! is_array( $fitting_row ) ) continue;
-            $sanitized_row = array();
-            $current_fitting_email_parts = array("Fitting #" . ($index + 1) . ":");
-
-            $sanitized_row['size_of_unit'] = isset( $fitting_row['size_of_unit'] ) ? floatval( $fitting_row['size_of_unit'] ) : 0;
-            $current_fitting_email_parts[] = "  Size of Unit: " . esc_html( (string) $sanitized_row['size_of_unit'] );
-            $unit_value = isset( $fitting_row['unit_of_measurement'] ) ? sanitize_text_field( $fitting_row['unit_of_measurement'] ) : '';
-            $sanitized_row['unit_of_measurement'] = $unit_value;
-            $unit_label = isset( $unit_of_measurement_choices[ $unit_value ] ) ? $unit_of_measurement_choices[ $unit_value ] : $unit_value;
-            $current_fitting_email_parts[] = "  Unit of Measurement: " . esc_html( $unit_label );
-            $type_value = isset( $fitting_row['fitting_type'] ) ? sanitize_text_field( $fitting_row['fitting_type'] ) : '';
-            $sanitized_row['fitting_type'] = $type_value;
-            $type_label = isset( $fitting_type_choices[ $type_value ] ) ? $fitting_type_choices[ $type_value ] : $type_value;
-            $current_fitting_email_parts[] = "  Fitting Type: " . esc_html( $type_label );
-            $sanitized_row['additional_notes'] = isset( $fitting_row['additional_notes'] ) ? sanitize_textarea_field( $fitting_row['additional_notes'] ) : '';
-            $current_fitting_email_parts[] = "  Additional Notes: " . nl2br( esc_html( $sanitized_row['additional_notes'] ) );
-            $sanitized_row['external_file_reference'] = isset( $fitting_row['external_file_reference'] ) ? esc_url_raw( $fitting_row['external_file_reference'] ) : '';
-            $current_fitting_email_parts[] = "  External File Reference: " . esc_html( $sanitized_row['external_file_reference'] );
-
-            if ( ! empty( $fitting_row['photo'] ) ) {
-                $uploadcare_url = esc_url_raw( trim($fitting_row['photo']) );
-                if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
-                    $sanitized_row['photo'] = $uploadcare_url;
-                    $current_fitting_email_parts[] = "  Photo (Uploadcare URL): <a href='" . esc_url($uploadcare_url) . "' target='_blank'>" . esc_url($uploadcare_url) . "</a>";
-                } else {
-                    $sanitized_row['photo'] = '';
-                    $current_fitting_email_parts[] = "  Photo (Uploadcare): Invalid URL - " . esc_html($fitting_row['photo']);
-                }
-            } else {
-                $sanitized_row['photo'] = '';
-                $current_fitting_email_parts[] = "  Photo: Not provided";
-            }
-            $sanitized_data['fittings'][] = $sanitized_row;
-            $fitting_email_parts[] = implode("\n", $current_fitting_email_parts);
+    if (isset($raw_fields['operator_name'])) {
+        $sanitized_data_for_acf['operator_name'] = sanitize_text_field($raw_fields['operator_name']);
+        if (empty($sanitized_data_for_acf['operator_name'])) {
+            wp_send_json_error(['message' => 'Operator Name is required.'], 400);
         }
-        if (!empty($fitting_email_parts)) { $email_body_parts[] = "\nFittings Details:\n" . implode("\n\n", $fitting_email_parts); }
+    } else {
+        wp_send_json_error(['message' => 'Operator Name is missing.'], 400);
     }
 
-    $post_title = 'Job Quote - ' . ($sanitized_data['operator_name'] ?? 'Unknown') . ' - ' . current_time('Y-m-d H:i:s');
-    $new_post_args = array('post_title' => sanitize_text_field($post_title), 'post_status' => 'publish', 'post_type' => 'job_quote');
-    $post_id = wp_insert_post( $new_post_args, true );
-    if ( is_wp_error( $post_id ) ) { wp_send_json_error( array( 'message' => 'Error: ' . $post_id->get_error_message() ), 500 ); }
+    if (isset($raw_fields['address_of_unit'])) {
+        $sanitized_data_for_acf['address_of_unit'] = sanitize_text_field($raw_fields['address_of_unit']);
+        if (empty($sanitized_data_for_acf['address_of_unit'])) {
+            wp_send_json_error(['message' => 'Address of Unit is required.'], 400);
+        }
+    } else {
+        wp_send_json_error(['message' => 'Address of Unit is missing.'], 400);
+    }
 
-    update_field( 'operator_name', $sanitized_data['operator_name'], $post_id );
-    update_field( 'address_of_unit', $sanitized_data['address_of_unit'], $post_id );
-    if ( ! empty( $sanitized_data['fittings'] ) ) { update_field( 'fittings', $sanitized_data['fittings'], $post_id ); }
+    // --- Sanitize Fittings Data for ACF ---
+    $sanitized_data_for_acf['fittings'] = [];
+    if (isset($raw_fields['fittings']) && is_array($raw_fields['fittings'])) {
+        foreach ($raw_fields['fittings'] as $index => $fitting_row) {
+            if (!is_array($fitting_row)) continue;
+            
+            $current_acf_row = []; 
+            $current_acf_row['size_of_unit'] = isset($fitting_row['size_of_unit']) ? floatval($fitting_row['size_of_unit']) : 0;
+            $current_acf_row['unit_of_measurement'] = isset($fitting_row['unit_of_measurement']) ? sanitize_text_field($fitting_row['unit_of_measurement']) : '';
+            $current_acf_row['fitting_type'] = isset($fitting_row['fitting_type']) ? sanitize_text_field($fitting_row['fitting_type']) : '';
+            $current_acf_row['additional_notes'] = isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : '';
+            $current_acf_row['external_file_reference'] = isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '';
 
-    $admin_email = get_option( 'admin_email' );
-    $email_subject = 'New Submission: ' . ($sanitized_data['operator_name'] ?? 'Unknown');
-    $email_headers = array('Content-Type: text/html; charset=UTF-8');
-    $final_email_body = "New job quote:<br><br>" . nl2br(implode("\n", $email_body_parts));
-    wp_mail( $admin_email, $email_subject, $final_email_body, $email_headers );
+            if (!empty($fitting_row['photo'])) {
+                $uploadcare_url = esc_url_raw(trim($fitting_row['photo']));
+                if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                    $current_acf_row['photo'] = $uploadcare_url;
+                } else {
+                    $current_acf_row['photo'] = '';
+                }
+            } else {
+                $current_acf_row['photo'] = ''; 
+            }
+            $sanitized_data_for_acf['fittings'][] = $current_acf_row;
+        }
+    }
 
-    wp_send_json_success( array( 'message' => 'Quote submitted successfully!', 'post_id' => $post_id ) );
+    $post_title = 'Job Quote - ' . ($sanitized_data_for_acf['operator_name'] ?? 'Unknown') . ' - ' . current_time('Y-m-d H:i:s');
+    $new_post_args = ['post_title' => sanitize_text_field($post_title), 'post_status' => 'publish', 'post_type' => 'job_quote'];
+    $post_id = wp_insert_post($new_post_args, true);
+
+    if (is_wp_error($post_id)) {
+        wp_send_json_error(['message' => 'Error creating post: ' . $post_id->get_error_message()], 500);
+    }
+
+    update_field('operator_name', $sanitized_data_for_acf['operator_name'], $post_id);
+    update_field('address_of_unit', $sanitized_data_for_acf['address_of_unit'], $post_id);
+    if (!empty($sanitized_data_for_acf['fittings'])) {
+        update_field('fittings', $sanitized_data_for_acf['fittings'], $post_id);
+    }
+
+
+    jpm_send_wordpress_quote_email(
+        $sanitized_data_for_acf['operator_name'], 
+        $sanitized_data_for_acf['address_of_unit'], 
+        isset($raw_fields['fittings']) && is_array($raw_fields['fittings']) ? $raw_fields['fittings'] : [],
+        $post_id
+    );
+
+    wp_send_json_success(['message' => 'Quote submitted successfully!', 'post_id' => $post_id]);
 }
-add_action( 'wp_ajax_my_jq_form_submission', 'jpm_jq_handle_form_submission' );
-add_action( 'wp_ajax_nopriv_my_jq_form_submission', 'jpm_jq_handle_form_submission' );
+add_action('wp_ajax_my_jq_form_submission', 'jpm_jq_handle_form_submission');
+add_action('wp_ajax_nopriv_my_jq_form_submission', 'jpm_jq_handle_form_submission');
 
 function jpm_jq_enqueue_form_assets() {
     global $post;
     if ( ! is_a( $post, 'WP_Post' ) || ! has_shortcode( $post->post_content, 'jpm_job_quote_form' ) ) { return; }
 
     wp_enqueue_style('my-jq-form-styles', plugin_dir_url( __FILE__ ) . 'assets/css/style.css', [], '1.0');
-    // NO UPLOADCARE ASSETS ENQUEUED HERE BY THIS PLUGIN
+
 
     wp_enqueue_script('my-jq-ui-script', plugin_dir_url( __FILE__ ) . 'assets/js/script.js', ['jquery', 'wp-util'], '1.0', true);
     wp_localize_script('my-jq-ui-script', 'jpmJQForm',
         array(
             'ajaxurl' => admin_url( 'admin-ajax.php' ),
             'add_fitting_template' => jq_get_fitting_template_html(),
-            'uploadcare_pubkey' => '7b06642c34de8ca6b466' // Your Uploadcare Pubkey
+            'uploadcare_pubkey' => '7b06642c34de8ca6b466' 
         )
     );
     wp_enqueue_script('my-jq-submission-script', plugin_dir_url( __FILE__ ) . 'assets/js/form-submission.js', ['jquery', 'my-jq-ui-script'], '1.0', true);
@@ -156,7 +246,6 @@ function jpm_jq_form_shortcode() {
 
     $unit_choices = jq_get_acf_select_choices_from_repeater( 'fittings', 'unit_of_measurement' );
     $fitting_type_choices = jq_get_acf_select_choices_from_repeater( 'fittings', 'fitting_type' );
-    $initial_ctx_name = ''; // Specific context name for the first item
     ?>
     <uc-config
         ctx-name="jpm-photo-uploader-0"
@@ -286,10 +375,6 @@ function jq_get_fitting_template_html() {
     
 
     <div class="jq-form--ini-wrapper jq-form-temp form-section fitting-fields" data-fitting-index="__INDEX__">
-        <script type="module">
-            import * as UC from "https://cdn.jsdelivr.net/npm/@uploadcare/file-uploader@v1/web/uc-file-uploader-regular.min.js";
-            UC.defineComponents(UC);
-        </script>
         <uc-config
             ctx-name="jpm-photo-uploader-__INDEX__"
             pubkey="7b06642c34de8ca6b466"

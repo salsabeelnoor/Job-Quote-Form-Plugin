@@ -58,11 +58,6 @@ jQuery(document).ready(function ($) {
             // This will add the key if it's missing from the initial check, or overwrite if it was already correct.
             formData.set(desiredPhpName, photoUrl || '');
 
-            // if (photoUrl) {
-            //      console.log(`JPM Form Submission: Ensured FormData has: Name="${desiredPhpName}", Value="${photoUrl}"`);
-            // } else {
-            //      console.log(`JPM Form Submission: Ensured FormData has EMPTY for: Name="${desiredPhpName}" (fitting index ${fittingDataIndex})`);
-            // }
         });
         // --- End Uploadcare processing ---
 
@@ -87,19 +82,40 @@ jQuery(document).ready(function ($) {
             processData: false,
             contentType: false,
             dataType: 'json',
-            success: function (response) {
+             success: function (response) {
                 if (response.success) {
                     $messagesDiv.html('<p class="success-message">' + response.data.message + '</p>').addClass('success');
-                    formElement.reset();
 
-                    // Visually reset Uploadcare widgets (best effort)
-                    // This is complex without a direct API. Consider if needed.
-                    // $fittingsContainer.find('uc-file-uploader-regular').each(function() {
-                    //     // if (this.clearFiles) { this.clearFiles(); } // Example hypothetical API
-                    // });
+                    // --- START: Uploadcare Widget Reset Logic ---
+                    const $firstFittingItemForReset = $fittingsContainer.children('.form-section.fitting-fields').first();
+                    if ($firstFittingItemForReset.length) {
 
-                    const $firstFittingItem = $fittingsContainer.children('.form-section.fitting-fields').first();
-                    $fittingsContainer.children('.form-section.fitting-fields').not($firstFittingItem).remove();
+                        const uploaderElement = $firstFittingItemForReset.find('uc-file-uploader-regular')[0];
+                        if (uploaderElement) {
+                            if (typeof uploaderElement.clearValue === 'function') {
+                                try {
+                                    uploaderElement.clearValue();
+
+                                } catch (e) {
+                                    console.error('Error calling clearValue() on Uploadcare widget:', e);
+                                }
+                            } else {
+                                
+                                const formInputElement = $firstFittingItemForReset.find('uc-form-input')[0];
+                                if (formInputElement && typeof formInputElement.value !== 'undefined') {
+                                    formInputElement.value = null; 
+                                } else {
+                                    console.warn('Uploadcare widget in the first fitting does not have a clearValue method or an accessible uc-form-input value property.');
+                                }
+                            }
+                        }
+                    }
+                    // --- END: Uploadcare Widget Reset Logic ---
+
+                    formElement.reset(); // Now reset standard form inputs
+
+                    const $firstFittingItemAfterReset = $fittingsContainer.children('.form-section.fitting-fields').first();
+                    $fittingsContainer.children('.form-section.fitting-fields').not($firstFittingItemAfterReset).remove();
 
                     $(document).trigger('jpmFormResettedForRepeater');
 

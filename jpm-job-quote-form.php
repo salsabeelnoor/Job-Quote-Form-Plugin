@@ -40,7 +40,7 @@ function jq_get_acf_select_choices_from_repeater( $repeater_name, $select_sub_fi
     return [];
 }
 
-function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fittings_raw_data, $post_id = null, $google_drive_link = null) {
+function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fittings_raw_data, $post_id = null) {
     $html_body_lines = [];
     $unit_of_measurement_choices = jq_get_acf_select_choices_from_repeater('fittings', 'unit_of_measurement');
     $fitting_type_choices = jq_get_acf_select_choices_from_repeater('fittings', 'fitting_type');
@@ -67,9 +67,6 @@ function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fit
             $current_fitting_html_lines[] = "  Fitting Type: " . esc_html($type_label);
             
             $current_fitting_html_lines[] = "  Additional Notes: " . nl2br(esc_html(isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : ''));
-            
-            $external_ref_email = isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '';
-            $current_fitting_html_lines[] = "  External File Reference: " . esc_html($external_ref_email);
 
             $photo_cdn_url_from_form = isset($fitting_row['photo']) ? trim($fitting_row['photo']) : '';
             $original_filename_from_form = isset($fitting_row['photo_original_filename']) ? trim($fitting_row['photo_original_filename']) : '';
@@ -91,13 +88,6 @@ function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fit
             $html_body_lines[] = "<br><strong>Fittings Details:</strong><br>" . implode("<br><br>\n", $fittings_section_html_parts);
         }
     }
-
-    if (!empty($google_drive_link)) {
-        $html_body_lines[] = "<br><br>---<br><strong>Job Photos Folder:</strong> <a href='" . esc_url($google_drive_link) . "' target='_blank'>" . esc_url($google_drive_link) . "</a>";
-    }
-    
-    // $post_id is available if needed, e.g., for an admin link
-    // if ($post_id) { $html_body_lines[] = "<br><br><a href='" . admin_url('post.php?post=' . $post_id . '&action=edit') . "'>View Quote in Admin</a>"; }
 
     return "New job quote submission details:<br><br>" . implode("<br>\n", $html_body_lines);
 }
@@ -186,7 +176,6 @@ function jpm_jq_handle_form_submission() {
             $current_acf_row['unit_of_measurement'] = isset($fitting_row['unit_of_measurement']) ? sanitize_text_field($fitting_row['unit_of_measurement']) : '';
             $current_acf_row['fitting_type'] = isset($fitting_row['fitting_type']) ? sanitize_text_field($fitting_row['fitting_type']) : '';
             $current_acf_row['additional_notes'] = isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : '';
-            $current_acf_row['external_file_reference'] = isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '';
 
             $current_acf_row['photo'] = ''; 
             $photo_cdn_url_from_form = isset($fitting_row['photo']) ? trim($fitting_row['photo']) : '';
@@ -227,13 +216,11 @@ function jpm_jq_handle_form_submission() {
     }
 
     // 6. Generate HTML Email Body (for Make.com and potentially WordPress email)
-    // We are NOT including the Google Drive link here as we don't have it yet from Make.com.
     $html_email_body_for_make_and_wp = jpm_generate_html_email_body(
         $sanitized_data_for_acf['operator_name'],
         $sanitized_data_for_acf['address_of_unit'],
         isset($raw_fields['fittings']) && is_array($raw_fields['fittings']) ? $raw_fields['fittings'] : [],
-        $post_id,
-        null // No Google Drive link at this stage
+        $post_id
     );
 
     // 7. Prepare and Send data to Make.com Webhook
@@ -245,7 +232,7 @@ function jpm_jq_handle_form_submission() {
         'email_body_for_reference' => $html_email_body_for_make_and_wp,
         'operator_name'            => $sanitized_data_for_acf['operator_name'], // Sending these too
         'address_of_unit'          => $sanitized_data_for_acf['address_of_unit'],
-        'post_id_wordpress'        => $post_id,
+        'post_id_wordpress'        => $post_id
     ];
     
     jpm_send_data_to_make_webhook($payload_for_make, $make_webhook_url, $post_id);
@@ -313,7 +300,7 @@ function jpm_jq_form_shortcode() {
                             </div>
                         </div>
                         <div class="jq-form-fields-wrapper">
-                            <h2 id="form-title">JPM Job Quote Submission <span class="fitting-number-initial" style="font-weight:normal; font-size:0.8em;">(Fitting #1)</span></h2>
+                            <h2 id="form-title">JPM Job Quote Submission</h2>
                             <div class="form-section initial-fields">
                                 <p class="form-group">
                                     <label for="operator_name">Operator Name:</label><br>
@@ -364,11 +351,6 @@ function jpm_jq_form_shortcode() {
                                         name="fields[fittings][0][additional_notes]" rows="4"
                                         placeholder="Enter any additional job details"></textarea>
                                 </p>
-                                <p class="form-group">
-                                    <label for="fitting_external_file_reference_0">External File Reference (Optional):</label><br>
-                                    <input type="text" id="fitting_external_file_reference_0" class="fitting-field fitting-external-file-reference"
-                                        name="fields[fittings][0][external_file_reference]" placeholder="e.g., URL">
-                                </p>
                                 <div class="jq-file-btn-group">
                                     <div class="form-group file-upload-group">
                                         <label class="d-block">Upload/Take Photo (via Uploadcare):</label><br>
@@ -387,7 +369,9 @@ function jpm_jq_form_shortcode() {
                                     </div>
                                 </div>
                             </div>
-                            <div id="form-messages" style="margin-top: 20px;"></div>
+                            <div id="form-messages">
+                                
+                            </div>
                         </div> 
                     </div> 
                 </div>
@@ -492,11 +476,6 @@ function jq_get_fitting_template_html() {
                             name="fields[fittings][__INDEX__][additional_notes]" rows="4"
                             placeholder="Enter any additional job details"></textarea>
                     </p>
-                     <p class="form-group">
-                        <label for="fitting-external-file-reference___INDEX__">External File Reference (Optional):</label><br>
-                        <input type="text" id="fitting-external-file-reference___INDEX__" class="fitting-field fitting-external-file-reference"
-                            name="fields[fittings][__INDEX__][external_file_reference]" placeholder="e.g., URL">
-                    </p>
                     <div class="jq-file-btn-group">
                         <div class="form-group file-upload-group">
                             <label class="d-block">Upload/Take Photo (via Uploadcare):</label><br>
@@ -507,9 +486,10 @@ function jq_get_fitting_template_html() {
                             
                         </div>
                         <div class="separator"></div>
-                        <div class="form-actions button-group template-action-buttons"> 
+                        <div class="form-actions button-group main-action-buttons">
                             <button type="button" class="button secondary add-another-fitting-button">Add Another Fitting</button>
-                            
+                            <?php wp_nonce_field( 'my_complex_form_nonce_action', 'my_complex_form_nonce_field' ); ?>
+                            <button type="submit" class="button jq-button" id="send-quote-button" name="my_complex_form_submit">Send Quote</button>
                         </div>
                     </div>
                 </div>

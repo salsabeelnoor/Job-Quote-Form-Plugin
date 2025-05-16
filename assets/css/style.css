@@ -1,8 +1,5 @@
-
-uc-form-input input {
-    opacity: 1  !important;
-    height: auto !important;
-    width: auto !important;
+uc-simple-btn button {
+    color: #000;
 }
 .jpm-jq-form {
     max-width: 1440px;
@@ -156,19 +153,26 @@ uc-form-input input {
     justify-content: space-between;
     gap: 20px;
 }
-.file-upload-group button {
-    margin-right: 5px; 
-    padding: 8px 12px;
-    font-size: 13px;
-    border: 1px solid #ccc;
-    background-color: #eee;
+.file-upload-group  button {
+    margin-top: 10px;
+    margin-right: 5px;
+    padding: 4px 12px;
+    font-size: 14px;
+    border: 1px solid #2b98e6;
+    background-color: #2b98e6;
     border-radius: 4px;
     cursor: pointer;
+    color: #fff;
 }
-.file-upload-group button:hover {
-     background-color: #ddd;
+.file-upload-group button span {
+    margin-left: 8px;
 }
-
+.file-upload-group button:hover, .file-upload-group button:focus{
+    background-color: #116bac;
+}
+.file-upload-group :where([uc-simple-btn])>uc-drop-area button {
+    padding: 8px 24px;
+}
 .file-upload-group .file-name-display {
      font-style: italic;
      color: #555;
@@ -254,11 +258,29 @@ uc-form-input input {
     height: 99px;
     margin: 0 16px;
 }
-
+#form-messages {
+    width: fit-content;
+    position: fixed;
+    top: 75px;
+    left: 50%;
+    transform: translateX(-50%);
+    border-radius: 8px;
+}
 #form-messages p{
     font-weight: 500;
+    padding: 8px 18px;
+    box-shadow: rgba(0, 0, 0, 0.34) 0px 1px 5px;
+    margin-bottom: 0;
+    border-radius: 8px;
+}
+#form-messages.success p, #form-messages.error p {
+    animation: disappear 6s linear forwards;
+}
+#form-messages.success p {
     color: #038903;
-    animation: disappear 5s linear forwards;
+}
+#form-message.error p {
+    color: rgb(117, 26, 26);
 }
 @keyframes disappear {
     0% {

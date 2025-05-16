@@ -3,7 +3,6 @@ jQuery(document).ready(function ($) {
     const $form = $('#jpm-complex-form');
     const $messagesDiv = $('#form-messages');
     const $fittingsContainer = $('#fittings-container');
-    // const $initialFittingGroupWrapper = $('.fitting-field-group').first(); // Not directly used in submit logic
 
     $form.on('submit', function (event) {
         event.preventDefault();
@@ -13,66 +12,50 @@ jQuery(document).ready(function ($) {
         const formElement = this;
         const formData = new FormData(formElement);
 
-        // console.log("JPM Form Submission: Manually processing and renaming Uploadcare photo fields for PHP...");
+        // console.log("JPM Form Submission: Processing FormData for Uploadcare URLs...");
 
         $fittingsContainer.children('.form-section.fitting-fields').each(function() {
             const $fittingSection = $(this);
             const fittingDataIndex = $fittingSection.data('fitting-index');
 
             if (typeof fittingDataIndex === 'undefined') {
-                console.warn("JPM Form Submission: Skipping a fitting section because data-fitting-index is undefined.", $fittingSection[0]);
-                return; // continue to next iteration
+                console.warn("JPM Form Submission: Skipping a fitting section, data-fitting-index undefined.", $fittingSection[0]);
+                return; 
             }
 
-            // This 'baseUcInternalInputName' should match the 'name' attribute script.js
-            // sets on the *inner* input of <uc-form-input>
-            const baseUcInternalInputName = `jpm-photo-uploader-${fittingDataIndex}`;
-            const desiredPhpName = `fields[fittings][${fittingDataIndex}][photo]`;
+            // Name of the inner input of uc-form-input (should match its ctx-name)
+            const ucInnerInputName = `jpm-photo-uploader-${fittingDataIndex}`;
+            // Name of the uc-form-input host element itself (holds the URL for PHP)
+            const ucHostInputName = `fields[fittings][${fittingDataIndex}][photo]`;
             let photoUrl = '';
 
-            // 1. Check if initial FormData already has the value under the UC internal name
-            //    (which should be the name of the INNER input field, matching ctx-name)
-            if (formData.has(baseUcInternalInputName)) {
-                photoUrl = formData.get(baseUcInternalInputName);
-                // console.log(`JPM Form Submission: Found URL in initial FormData for key "${baseUcInternalInputName}" (fitting ${fittingDataIndex}): "${photoUrl}"`);
-                formData.delete(baseUcInternalInputName); // Remove old key
-            } else if (formData.has(baseUcInternalInputName + '[]')) { // In case it's treated as an array
-                photoUrl = formData.get(baseUcInternalInputName + '[]');
-                // console.log(`JPM Form Submission: Found URL in initial FormData for key "${baseUcInternalInputName}[]" (fitting ${fittingDataIndex}): "${photoUrl}"`);
-                formData.delete(baseUcInternalInputName + '[]'); // Remove old key with []
+            // Attempt 1: Get URL from the inner input's name (which matches ctx-name)
+            if (formData.has(ucInnerInputName)) {
+                photoUrl = formData.get(ucInnerInputName);
+                formData.delete(ucInnerInputName); // Remove this, as we'll re-add with phpExpectedName
+            } else if (formData.has(ucInnerInputName + '[]')) { 
+                photoUrl = formData.get(ucInnerInputName + '[]');
+                formData.delete(ucInnerInputName + '[]');
+            }
+            // Attempt 2: If not found above, assume URL is already in FormData under the host input's name
+            else if (formData.has(ucHostInputName)) {
+                photoUrl = formData.get(ucHostInputName);
+                // No need to delete, it's already named correctly for PHP, just ensure photoUrl var is set
             } else {
-                // 2. Fallback (if script.js couldn't set inner input name correctly or FormData missed it)
-                //    Try to get it directly from <uc-form-input>'s name (which is the PHP name)
-                //    This relies on Uploadcare populating its host custom element's value.
-                // console.log(`JPM Form Submission: URL not found in initial FormData for fitting ${fittingDataIndex} via ctx-name derived keys. Attempting host <uc-form-input> with name="${desiredPhpName}".`);
-                if (formData.has(desiredPhpName)) {
-                    photoUrl = formData.get(desiredPhpName);
-                    // console.log(`JPM Form Submission: Fallback - Got URL from <uc-form-input name="${desiredPhpName}"> (fitting ${fittingDataIndex}): "${photoUrl}"`);
-                    // No need to delete, as it's already the correct name, just ensuring photoUrl is set.
-                } else {
-                    console.warn(`JPM Form Submission: Fallback - Could not find photo URL for fitting index ${fittingDataIndex} by any method.`);
-                }
+                console.warn(`JPM Form Submission: Could not find photo URL for fitting index ${fittingDataIndex}.`);
             }
 
-            // Set the value in FormData with the name PHP expects.
-            // This will add the key if it's missing from the initial check, or overwrite if it was already correct.
-            formData.set(desiredPhpName, photoUrl || '');
-
+            // Ensure the URL is set in FormData under the name PHP expects (ucHostInputName)
+            formData.set(ucHostInputName, photoUrl || '');
         });
         // --- End Uploadcare processing ---
-
-        // console.log("JPM Form Submission: Final FormData entries BEFORE AJAX call:");
-        // for (let pair of formData.entries()) {
-        //     console.log(`  Final FD: ${pair[0]} = ${pair[1]}`);
-        // }
 
         formData.append('action', 'my_jq_form_submission');
 
         const $submitButton = $(this).find('button.jq-button[name="my_complex_form_submit"]');
         const textWhileSubmitting = 'Submitting...';
-        const desiredTextAfterSubmission = 'Send Quote'; // Define the canonical text
+        const desiredTextAfterSubmission = 'Send Quote';
 
-        // Disable button and set "Submitting..." text
         $submitButton.prop('disabled', true).html(textWhileSubmitting);
 
         $.ajax({
@@ -82,41 +65,74 @@ jQuery(document).ready(function ($) {
             processData: false,
             contentType: false,
             dataType: 'json',
-             success: function (response) {
+            success: function (response) {
                 if (response.success) {
                     $messagesDiv.html('<p class="success-message">' + response.data.message + '</p>').addClass('success');
 
-                    // --- START: Uploadcare Widget Reset Logic ---
+                    // --- START: Uploadcare Widget Reset Logic (Revised) ---
                     const $firstFittingItemForReset = $fittingsContainer.children('.form-section.fitting-fields').first();
                     if ($firstFittingItemForReset.length) {
+                        const firstFittingIndex = $firstFittingItemForReset.data('fitting-index'); 
+                        const uploaderCtxName = `jpm-photo-uploader-${firstFittingIndex}`;
+                        
+                        // Attempt to find the uc-upload-ctx-provider for this uploader
+                        const ctxProviderElement = document.querySelector(`uc-upload-ctx-provider[ctx-name="${uploaderCtxName}"]`);
 
-                        const uploaderElement = $firstFittingItemForReset.find('uc-file-uploader-regular')[0];
-                        if (uploaderElement) {
-                            if (typeof uploaderElement.clearValue === 'function') {
+                        if (ctxProviderElement) {
+                            // console.log(`JPM Form Submission: Found ctxProvider for ${uploaderCtxName}`, ctxProviderElement);
+                            let clearedViaProvider = false;
+                            // Try common API patterns on the provider
+                            if (typeof ctxProviderElement.clearCollection === 'function') {
                                 try {
-                                    uploaderElement.clearValue();
+                                    ctxProviderElement.clearCollection();
+                                    clearedViaProvider = true;
+                                    // console.log(`JPM Form Submission: Called clearCollection() on ctxProvider for ${uploaderCtxName}`);
+                                } catch (e) { console.error(`Error calling clearCollection() on ctxProvider for ${uploaderCtxName}:`, e); }
+                            } else if (typeof ctxProviderElement.uploadCollection === 'object' && ctxProviderElement.uploadCollection && typeof ctxProviderElement.uploadCollection.clearAll === 'function') {
+                                try { // Example if provider has a property that is a collection API
+                                    ctxProviderElement.uploadCollection.clearAll();
+                                    clearedViaProvider = true;
+                                    // console.log(`JPM Form Submission: Called uploadCollection.clearAll() via ctxProvider for ${uploaderCtxName}`);
+                                } catch (e) { console.error(`Error calling uploadCollection.clearAll() for ${uploaderCtxName}:`, e); }
+                            }
+                            // Add other attempts to use provider API if known
 
-                                } catch (e) {
-                                    console.error('Error calling clearValue() on Uploadcare widget:', e);
-                                }
-                            } else {
-                                
-                                const formInputElement = $firstFittingItemForReset.find('uc-form-input')[0];
-                                if (formInputElement && typeof formInputElement.value !== 'undefined') {
-                                    formInputElement.value = null; 
+                            if (!clearedViaProvider) {
+                                // Fallback: Try methods on the uc-file-uploader-regular element itself
+                                const uploaderElement = $firstFittingItemForReset.find('uc-file-uploader-regular')[0];
+                                if (uploaderElement && typeof uploaderElement.clearValue === 'function') {
+                                    try {
+                                        uploaderElement.clearValue();
+                                        // console.log(`JPM Form Submission: Called clearValue() directly on uploaderElement for ${uploaderCtxName}`);
+                                    } catch (e) { console.error(`Error calling clearValue() on uploaderElement for ${uploaderCtxName}:`, e); }
                                 } else {
-                                    console.warn('Uploadcare widget in the first fitting does not have a clearValue method or an accessible uc-form-input value property.');
+                                     console.warn(`JPM Form Submission: No known programmatic reset method found for Uploadcare widget with ctx-name "${uploaderCtxName}". Form reset will clear input value.`);
                                 }
+                            }
+                        } else {
+                            console.warn(`JPM Form Submission: Could not find uc-upload-ctx-provider with ctx-name "${uploaderCtxName}" to attempt widget reset.`);
+                            // If provider not found, try direct uploader clear as a last resort
+                            const uploaderElement = $firstFittingItemForReset.find('uc-file-uploader-regular')[0];
+                            if (uploaderElement && typeof uploaderElement.clearValue === 'function') {
+                                try { uploaderElement.clearValue(); } catch (e) { /* ignore */ }
                             }
                         }
                     }
                     // --- END: Uploadcare Widget Reset Logic ---
 
-                    formElement.reset(); // Now reset standard form inputs
+                    formElement.reset(); // Reset standard form inputs. This should clear the <uc-form-input value="">
 
+                    // Explicitly clear the hidden original filename input for the first item
+                    if ($firstFittingItemForReset.length) {
+                        $firstFittingItemForReset.find('.original-filename-input').val('');
+                    }
+
+                    // Remove dynamic fittings except the first one
                     const $firstFittingItemAfterReset = $fittingsContainer.children('.form-section.fitting-fields').first();
                     $fittingsContainer.children('.form-section.fitting-fields').not($firstFittingItemAfterReset).remove();
 
+                    // Trigger event for script.js to update its internal state (like fittingCount)
+                    // and re-initialize listeners on the first item.
                     $(document).trigger('jpmFormResettedForRepeater');
 
                     $('html, body').animate({ scrollTop: $form.offset().top - 50 }, 300);
@@ -133,7 +149,6 @@ jQuery(document).ready(function ($) {
                  $messagesDiv.html('<p class="error-message">' + errorMessage + '</p>').addClass('error');
             },
             complete: function () {
-                // Re-enable button and ALWAYS set text back to "Send Quote"
                 $submitButton.prop('disabled', false).html(desiredTextAfterSubmission);
             }
         });

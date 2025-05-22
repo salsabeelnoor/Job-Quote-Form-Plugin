@@ -479,21 +479,17 @@ function jq_get_fitting_template_html() {
                     <div class="unit-group">
                         <p class="form-group">
                             <label for="fitting-size-of-unit___INDEX__">Size of Unit:</label><br>
-                            <input type="text" id="fitting-size-of-unit___INDEX__" class="fitting-field fitting-size-of-unit"
-                                name="fields[fittings][__INDEX__][size_of_unit]" placeholder="Size of Unit">
+                            <input type="text" id="fitting-size-of-unit___INDEX__" 
+                                   class="fitting-field fitting-size-of-unit readonly-size-of-unit" 
+                                   name="fields[fittings][__INDEX__][size_of_unit]" readonly> 
                         </p>
                         <p class="form-group">
                             <label for="fitting-unit-of-measurement___INDEX__">Unit of measurement:</label><br>
-                            <select id="fitting-unit-of-measurement___INDEX__" class="fitting-field fitting-unit-of-measurement"
+                             <input type="text" id="fitting-unit-of-measurement-display___INDEX__" 
+                                class="fitting-field readonly-unit-of-measurement-text" readonly>
+                            <input type="hidden" class="hidden-unit-of-measurement" 
+                                id="fitting-unit-of-measurement___INDEX__" 
                                 name="fields[fittings][__INDEX__][unit_of_measurement]">
-                                <option value="">-- Select Unit --</option>
-                                <?php if ( ! empty( $unit_choices ) ) : foreach ( $unit_choices as $value => $label ) : ?>
-                                <option value="<?php echo esc_attr( $value ); ?>"><?php echo esc_html( $label ); ?></option>
-                                <?php endforeach; else: ?>
-                                <option value="feet">Feet</option>
-                                <option value="meter">Meters</option>
-                                <?php endif; ?>
-                            </select>
                         </p>
                     </div>
                     <p class="form-group">

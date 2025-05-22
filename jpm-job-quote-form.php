@@ -40,7 +40,7 @@ function jq_get_acf_select_choices_from_repeater( $repeater_name, $select_sub_fi
     return [];
 }
 
-function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fittings_raw_data, $post_id = null) {
+function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fittings_raw_data, $post_id = null, $google_drive_link = null) {
     $html_body_lines = [];
     $unit_of_measurement_choices = jq_get_acf_select_choices_from_repeater('fittings', 'unit_of_measurement');
     $fitting_type_choices = jq_get_acf_select_choices_from_repeater('fittings', 'fitting_type');
@@ -49,7 +49,7 @@ function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fit
     $html_body_lines[] = "<strong>Address of Unit:</strong> " . esc_html($address_of_unit);
 
     if (!empty($all_fittings_raw_data) && is_array($all_fittings_raw_data)) {
-        $fittings_section_html_parts = []; // To store HTML for each fitting block
+        $fittings_section_html_parts = []; 
         foreach ($all_fittings_raw_data as $index => $fitting_row) {
             if (!is_array($fitting_row)) {
                 continue;
@@ -67,66 +67,86 @@ function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fit
             $current_fitting_html_lines[] = "  Fitting Type: " . esc_html($type_label);
             
             $current_fitting_html_lines[] = "  Additional Notes: " . nl2br(esc_html(isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : ''));
+            
+            $external_ref_email = isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '';
+            $current_fitting_html_lines[] = "  External File Reference: " . esc_html($external_ref_email);
 
-            $photo_cdn_url_from_form = isset($fitting_row['photo']) ? trim($fitting_row['photo']) : '';
-            $original_filename_from_form = isset($fitting_row['photo_original_filename']) ? trim($fitting_row['photo_original_filename']) : '';
+            $photo_urls_for_this_fitting = isset($fitting_row['photo']) && is_array($fitting_row['photo'])
+                                         ? $fitting_row['photo']
+                                         : [];
 
-            if (!empty($photo_cdn_url_from_form)) {
-                $uploadcare_url = esc_url_raw($photo_cdn_url_from_form);
-                if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
-                    $link_text = !empty($original_filename_from_form) ? esc_html($original_filename_from_form) : esc_url($uploadcare_url);
-                    $current_fitting_html_lines[] = "  Photo: <a href='" . esc_url($uploadcare_url) . "' target='_blank'>" . $link_text . "</a>";
-                } else {
-                    $current_fitting_html_lines[] = "  Photo: Invalid URL" . (!empty($original_filename_from_form) ? ' for ' . esc_html($original_filename_from_form) : '');
+            $original_filenames_json = isset($fitting_row['photo_original_filenames_json']) ? trim($fitting_row['photo_original_filenames_json']) : '[]';
+            $original_filenames = json_decode(stripslashes($original_filenames_json), true);
+            if (!is_array($original_filenames)) $original_filenames = [];
+
+            if (!empty($photo_urls_for_this_fitting)) {
+                $current_fitting_html_lines[] = "  Photos:";
+                foreach ($photo_urls_for_this_fitting as $url_idx => $photo_url_string) {
+                    if (empty(trim($photo_url_string))) continue;
+                    $uploadcare_url = esc_url_raw(trim($photo_url_string)); 
+                    
+                    if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                        $link_text = isset($original_filenames[$url_idx]) && !empty($original_filenames[$url_idx]) 
+                                   ? esc_html($original_filenames[$url_idx]) 
+                                   : esc_url($uploadcare_url); 
+                        $current_fitting_html_lines[] = "    <a href='" . esc_url($uploadcare_url) . "' target='_blank'>" . $link_text . "</a>";
+                    } else {
+                        $filename_display = isset($original_filenames[$url_idx]) && !empty($original_filenames[$url_idx]) 
+                                          ? ' for ' . esc_html($original_filenames[$url_idx]) 
+                                          : '';
+                        $current_fitting_html_lines[] = "    Photo: Invalid URL" . $filename_display;
+                    }
                 }
             } else {
-                $current_fitting_html_lines[] = "  Photo: Not provided";
+                $current_fitting_html_lines[] = "  Photos: Not provided";
             }
-            $fittings_section_html_parts[] = implode("<br>\n", $current_fitting_html_lines);
+
+            $fittings_section_html_parts[] = implode("<br>\n  ", $current_fitting_html_lines); // Use <br> and \n for readability in source
         }
         if (!empty($fittings_section_html_parts)) {
             $html_body_lines[] = "<br><strong>Fittings Details:</strong><br>" . implode("<br><br>\n", $fittings_section_html_parts);
         }
     }
 
+    if (!empty($google_drive_link)) {
+        $html_body_lines[] = "<br><br>---<br><strong>Job Photos Folder:</strong> <a href='" . esc_url($google_drive_link) . "' target='_blank'>" . esc_url($google_drive_link) . "</a>";
+    }
+    
     return "New job quote submission details:<br><br>" . implode("<br>\n", $html_body_lines);
 }
-
 function jpm_send_data_to_make_webhook($payload, $webhook_url, $post_id) {
-    if (empty($webhook_url) || strpos($webhook_url, 'YOUR_MAKE_COM_WEBHOOK_URL_HERE') !== false) {
-        error_log('JPM Quote - Make.com webhook URL is not configured. Skipping send for post ID ' . $post_id);
-        return false; // Indicate that sending was skipped or failed due to config
+    if (empty($webhook_url) || strpos($webhook_url, 'YOUR_MAKE_COM_WEBHOOK_URL_HERE') !== false) { // Check against placeholder
+        error_log('JPM Quote (to Make.com) - Webhook URL not configured. Skipping send for post ID ' . $post_id);
+        return false;
     }
 
-     $json_payload_for_make = json_encode($payload); // Encode it once
+    $json_payload_for_make = json_encode($payload);
 
-    // Log the exact JSON payload being sent to Make.com
+
     error_log('JPM Quote (to Make.com) - Payload for post ID ' . $post_id . ': ' . $json_payload_for_make);
 
     $args = [
         'body'        => $json_payload_for_make,
         'headers'     => ['Content-Type' => 'application/json'],
-        'timeout'     => 15, // seconds
+        'timeout'     => 15, 
         'redirection' => 5,
-        'blocking'    => true, // Wait for Make's immediate "Accepted" response
-        'sslverify'   => true, // true for production
+        'blocking'    => true, 
+        'sslverify'   => true, 
     ];
-
-    error_log('JPM Quote (to Make.com) - wp_remote_post args for post ID ' . $post_id . ': ' . print_r($args, true)); // Optional: for deep debugging
 
     $response_from_make = wp_remote_post($webhook_url, $args);
 
     if (is_wp_error($response_from_make)) {
-        error_log('JPM Quote - Error sending data to Make.com for post ID ' . $post_id . ': ' . $response_from_make->get_error_message());
+        error_log('JPM Quote (to Make.com) - ERROR for post ID ' . $post_id . ': ' . $response_from_make->get_error_message());
         return false;
     } else {
         $response_code = wp_remote_retrieve_response_code($response_from_make);
         $response_body = wp_remote_retrieve_body($response_from_make);
         if ($response_code !== 200 || strtolower(trim($response_body)) !== 'accepted') {
-            error_log('JPM Quote - Make.com webhook returned unexpected response for post ID ' . $post_id . '. Status: ' . $response_code . ' Body: ' . $response_body);
+            error_log('JPM Quote (to Make.com) - UNEXPECTED RESPONSE for post ID ' . $post_id . '. Status: ' . $response_code . ' Body: ' . $response_body);
             return false;
         } else {
-            error_log('JPM Quote - Data successfully sent to Make.com for post ID ' . $post_id . '. Response: Accepted');
+            error_log('JPM Quote (to Make.com) - SUCCESS for post ID ' . $post_id . '. Response: Accepted');
             return true;
         }
     }
@@ -176,25 +196,44 @@ function jpm_jq_handle_form_submission() {
             $current_acf_row['unit_of_measurement'] = isset($fitting_row['unit_of_measurement']) ? sanitize_text_field($fitting_row['unit_of_measurement']) : '';
             $current_acf_row['fitting_type'] = isset($fitting_row['fitting_type']) ? sanitize_text_field($fitting_row['fitting_type']) : '';
             $current_acf_row['additional_notes'] = isset($fitting_row['additional_notes']) ? sanitize_textarea_field($fitting_row['additional_notes']) : '';
+            $current_acf_row['external_file_reference'] = isset($fitting_row['external_file_reference']) ? esc_url_raw($fitting_row['external_file_reference']) : '';
 
-            $current_acf_row['photo'] = ''; 
-            $photo_cdn_url_from_form = isset($fitting_row['photo']) ? trim($fitting_row['photo']) : '';
-            $original_filename_from_form = isset($fitting_row['photo_original_filename']) ? trim($fitting_row['photo_original_filename']) : '';
-
-            if (!empty($photo_cdn_url_from_form)) {
-                $uploadcare_url = esc_url_raw($photo_cdn_url_from_form);
-                if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
-                    $current_acf_row['photo'] = $uploadcare_url;
-
-                    $filename_for_make = !empty($original_filename_from_form)
-                                       ? sanitize_file_name($original_filename_from_form)
-                                       : 'photo_' . substr(basename($uploadcare_url), 0, 8) . '.jpg'; // Fallback
-                    $all_photos_info_for_make[] = [
-                        'url' => $uploadcare_url,
-                        'filename' => $filename_for_make
-                    ];
+            $photo_urls_submitted = [];
+            if (isset($fitting_row['photo'])) {
+                if (is_array($fitting_row['photo'])) {
+                    $photo_urls_submitted = $fitting_row['photo'];
+                } elseif (!empty(trim($fitting_row['photo']))) { 
+                    $photo_urls_submitted = [trim($fitting_row['photo'])];
                 }
             }
+
+            $original_filenames_json = isset($fitting_row['photo_original_filenames_json']) ? trim($fitting_row['photo_original_filenames_json']) : '[]';
+            $original_filenames = json_decode(stripslashes($original_filenames_json), true);
+            if (!is_array($original_filenames)) $original_filenames = [];
+
+            $acf_photo_storage_for_this_fitting = []; 
+            
+            if (!empty($photo_urls_submitted)) {
+                foreach ($photo_urls_submitted as $url_idx => $photo_url_string) {
+                    if (empty(trim($photo_url_string))) continue;
+
+                    $uploadcare_url = esc_url_raw(trim($photo_url_string));
+                    if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                        $acf_photo_storage_for_this_fitting[] = $uploadcare_url; 
+
+                        $current_original_filename = isset($original_filenames[$url_idx]) && !empty($original_filenames[$url_idx])
+                                                   ? sanitize_file_name($original_filenames[$url_idx])
+                                                   : 'photo_' . ($index + 1) . '_' . ($url_idx + 1) . '.jpg'; 
+
+                        $all_photos_info_for_make[] = [ 
+                            'url' => $uploadcare_url,
+                            'filename' => $current_original_filename
+                        ];
+                    }
+                }
+            }
+            $current_acf_row['photo'] = implode(',', $acf_photo_storage_for_this_fitting);
+            
             $sanitized_data_for_acf['fittings'][] = $current_acf_row;
         }
     }
@@ -215,8 +254,8 @@ function jpm_jq_handle_form_submission() {
         update_field('fittings', $sanitized_data_for_acf['fittings'], $post_id);
     }
 
-    // 6. Generate HTML Email Body (for Make.com and potentially WordPress email)
-    $html_email_body_for_make_and_wp = jpm_generate_html_email_body(
+    // 6. Generate HTML Email Body (for Make.com reference)
+    $html_email_body_for_make = jpm_generate_html_email_body(
         $sanitized_data_for_acf['operator_name'],
         $sanitized_data_for_acf['address_of_unit'],
         isset($raw_fields['fittings']) && is_array($raw_fields['fittings']) ? $raw_fields['fittings'] : [],
@@ -229,8 +268,8 @@ function jpm_jq_handle_form_submission() {
     $payload_for_make = [
         'submission_timestamp'     => current_time('mysql'),
         'photos'                   => $all_photos_info_for_make, 
-        'email_body_for_reference' => $html_email_body_for_make_and_wp,
-        'operator_name'            => $sanitized_data_for_acf['operator_name'], // Sending these too
+        'email_body_for_reference' => $html_email_body_for_make,
+        'operator_name'            => $sanitized_data_for_acf['operator_name'],
         'address_of_unit'          => $sanitized_data_for_acf['address_of_unit'],
         'post_id_wordpress'        => $post_id
     ];
@@ -279,7 +318,7 @@ function jpm_jq_form_shortcode() {
                         ctx-name="jpm-photo-uploader-0"
                         pubkey="7b06642c34de8ca6b466"
                         img-only="true"
-                        multiple="false"
+                        multiple="true"
                         max-local-file-size-bytes="524288000"
                         use-cloud-image-editor="false"
                         source-list="local, camera, gdrive"
@@ -357,7 +396,7 @@ function jpm_jq_form_shortcode() {
                                         <uc-file-uploader-regular ctx-name="jpm-photo-uploader-0"
                                         css-src="https://cdn.jsdelivr.net/npm/@uploadcare/file-uploader@v1/web/uc-file-uploader.min.css">
                                             <uc-form-input ctx-name="jpm-photo-uploader-0"> </uc-form-input>
-                                            <input type="hidden" class="original-filename-input" name="fields[fittings][0][photo_original_filename]" value="">
+                                            <input type="hidden" class="original-filenames-json" name="fields[fittings][0][photo_original_filenames_json]" value="">
                                         </uc-file-uploader-regular>
                                         
                                     </div>
@@ -401,7 +440,7 @@ function jq_get_fitting_template_html() {
             ctx-name="jpm-photo-uploader-__INDEX__"
             pubkey="7b06642c34de8ca6b466"
             img-only="true"
-            multiple="false"
+            multiple="true"
             max-local-file-size-bytes="524288000"
             use-cloud-image-editor="false"
             source-list="local, camera, gdrive"
@@ -481,7 +520,7 @@ function jq_get_fitting_template_html() {
                             <label class="d-block">Upload/Take Photo (via Uploadcare):</label><br>
                             <uc-file-uploader-regular ctx-name="jpm-photo-uploader-__INDEX__" >
                                 <uc-form-input ctx-name="jpm-photo-uploader-__INDEX__" ></uc-form-input>
-                                <input type="hidden" class="original-filename-input" name="fields[fittings][__INDEX__][photo_original_filename]" value="">
+                                <input type="hidden" class="original-filenames-json" name="fields[fittings][__INDEX__][photo_original_filenames_json]" value="">
                             </uc-file-uploader-regular>
                             
                         </div>

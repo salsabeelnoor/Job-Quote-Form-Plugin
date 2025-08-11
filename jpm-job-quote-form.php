@@ -218,7 +218,7 @@ function jpm_jq_handle_form_submission() {
                     if (empty(trim($photo_url_string))) continue;
 
                     $uploadcare_url = esc_url_raw(trim($photo_url_string));
-                    if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                    if (filter_var($uploadcare_url, FILTER_VALIDATE_URL)) {
                         $acf_photo_storage_for_this_fitting[] = $uploadcare_url; 
 
                         $current_original_filename = isset($original_filenames[$url_idx]) && !empty($original_filenames[$url_idx])

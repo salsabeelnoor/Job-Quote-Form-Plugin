@@ -85,7 +85,7 @@ function jpm_generate_html_email_body($operator_name, $address_of_unit, $all_fit
                     if (empty(trim($photo_url_string))) continue;
                     $uploadcare_url = esc_url_raw(trim($photo_url_string)); 
                     
-                    if (filter_var($uploadcare_url, FILTER_VALIDATE_URL) && strpos($uploadcare_url, 'ucarecdn.com') !== false) {
+                    if (filter_var($uploadcare_url, FILTER_VALIDATE_URL))  {
                         $link_text = isset($original_filenames[$url_idx]) && !empty($original_filenames[$url_idx]) 
                                    ? esc_html($original_filenames[$url_idx]) 
                                    : esc_url($uploadcare_url); 
